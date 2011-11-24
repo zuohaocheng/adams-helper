@@ -8,6 +8,7 @@ SampleFile =<<EOF
 #Part1, Part2, Type, x, y, z, a, b, c, group
 AXIS, BEARING, Revolute, 0.0, -1e-2, 1, 90, 0, 90, ab
 AXIS, GEAR, Fixed, 0, 0, 0, 0, 0, 0
+AXIS, Motor, motor_linear, 0, 0, 0, 0, 0, 0
 EOF
 
 IconSizeDefault = 1 #5e-3
@@ -187,53 +188,68 @@ class DOF
     DOF.new(self.to_a + another_dof.to_a)
   end
 
-  def dir_cmd dir_sym, group, markers
+  def self.type_from_dir dir_sym
     if [:a, :b ,:c].member? dir_sym
-      type = :torque
+      dir = {:a => :x, :b => :y, :c => :z}[dir_sym]
+      {:type => :torque, :dir => dir}
     elsif [:x, :y ,:z].member? dir_sym
-      type = :force
+      {:type => :force, :dir => dir_sym}
     else
       raise Errno::EINVAL, "Invalid direction #{dir_sym}"
     end
-    
+  end
+  
+  def self.dir_func_cmd type, dir_sym, markers
+    dir = dir_sym.to_s
     if type == :force
-      dir = dir_sym.to_s
-      
       lval = "#{dir}_force_function"
       d_fun = "D#{dir.upcase}"
       v_fun = "V#{dir.upcase}"
     elsif type == :torque
-      dir = {:a => 'x', :b => 'y', :c => 'z'}[dir_sym]
-      
       lval = "#{dir}_torque_function"
       d_fun = "A#{dir.upcase}"
       v_fun = "W#{dir.upcase}"
     end
 
-    if group.dof.to_a.member? dir_sym
-      d_var = group.variable(dir_sym, :k).name
-      v_var = group.variable(dir_sym, :c).name
-    else
-      d_var = ''
-      v_var = ''
-      d_val = '0.0'
-      v_val = '0.0'
+    d_val = "#{d_fun}(#{markers[0].name}, #{markers[1].name}"
+    d_val += ", #{markers[1].name}" if type == :force
+    d_val += ')'
+    v_val = "#{v_fun}(#{markers[0].name}, #{markers[1].name}, #{markers[1].name})"
+    
+    {:d => d_val, :v => v_val}
+  end
+
+  def dir_cmd dir_sym, group, markers
+    type_d = DOF.type_from_dir dir_sym
+    type = type_d[:type]
+    dir = type_d[:dir]
+
+    if type == :force
+      lval = "#{dir.to_s}_force_function"
+    elsif type == :torque
+      lval = "#{dir.to_s}_torque_function"
     end
     
-    if self.instance_variable_get "@#{dir_sym}"
-      d_val = "#{d_fun}(#{markers[0].name}, #{markers[1].name}"
-      d_val += ", #{markers[1].name}" if type == :force
-      d_val += ')'
-      v_val = "#{v_fun}(#{markers[0].name}, #{markers[1].name}, #{markers[1].name})"
+    if group.dof.to_a.member? dir_sym
+      if group.motor
+        return <<EOF
+#{lval} = "VARVAL(#{group.variable(dir_sym, :in).name})"
+EOF
+      else
+        d_var = group.variable(dir_sym, :k).name
+        v_var = group.variable(dir_sym, :c).name
 
-      d_exp = " - #{d_var} * #{d_val}"
-      v_exp = " - #{v_var} * #{v_val}"
+        val = DOF.dir_func_cmd type, dir, markers
 
-      <<EOF
+        d_exp = " - #{d_var} * #{val[:d]}"
+        v_exp = " - #{v_var} * #{val[:v]}"
+
+      return <<EOF
 #{lval} = "#{d_exp} #{v_exp}" &
 EOF
+      end
     else
-      <<EOF
+      return <<EOF
 #{lval} = "0.0" &
 EOF
     end
@@ -249,7 +265,7 @@ end
 class Variable
   attr_accessor :name, :dir, :type, :surfix, :unit, :comment, :value
 
-  def initialize dir, type, surfix, comment = '', value = 0.0
+  def initialize dir, type, surfix, comment = '', value = nil
     @dir, @type, @surfix, @comment, @value = dir, type, surfix, comment, value
 
     type_t = true if [:a, :b, :c].member? dir
@@ -262,10 +278,11 @@ class Variable
     @name = ".#{ModelName}."
     
     if type == :k
-      @value = 1e4
+      @value ||= 1e4 
       @unit += 'stiffness'
       @name += 'K'
     elsif type == :c
+      @value ||= 0.0
       @unit += 'damping'
       @name += 'C'
     else
@@ -287,26 +304,60 @@ EOF
   end
 end
 
+class StateVar
+  attr_accessor :name, :dir, :func, :initial_cond, :type, :comment
+  def initialize dir, type, surfix, markers, initial_cond = 0.0, comment = '', options={}
+    @initial_cond, @comment = initial_cond, comment
+    if type == :in
+      @name = ".#{ModelName}.In_#{dir.to_s}_#{surfix}"
+      @func = '0.0'
+    elsif [:d, :v].member? type
+      @name = ".#{ModelName}.#{type.to_s.upcase}#{dir.to_s}_#{surfix}"
+      @func = (DOF.dir_func_cmd :force, dir, markers)[type]
+    else
+      raise Err::EINVAL, "Invalid type #{type} of State Variable"
+    end
+  end
+
+  def to_cmd
+    <<EOF
+data_element create variable variable_name = #{@name} &
+  function = "#{@func}" &
+  initial_condition = #{initial_cond} &
+  comments = "#{@comment}"
+EOF
+  end
+end
+
 class Group
   include UniqueName
-  attr_accessor :name, :dof
+  attr_accessor :name, :dof, :motor
 
   @@groups = {}
 
-  def self.newGroup str
-    Group.new self.newName(str)
+  def self.newGroup str, options={}
+    Group.new self.newName(str), options
   end
 
-  def self.groupFromString str
-    @@groups[str] || self.newGroup(str)
+  def self.groupFromString str, options={}
+    # if options[:motor]
+    #   self.newGroup(str, options)
+    # else
+      @@groups[str] || self.newGroup(str, options)
+    # end
   end
 
-  def initialize name
+  def initialize name, options
     raise Errno::EAGAIN, "Another group named #{name} exists" if @@groups[name]
     @name = name
     @@groups[name] = self
     @dof = DOF.new [] #[:x, :y, :z, :a, :b, :c]
     @variables = {}
+    if options[:motor]
+      @motor = true
+      @markers = options[:markers]
+      raise Errno::EINVAL, "Group-motor must have markers." unless @markers
+    end
   end
 
   def self.to_cmd
@@ -317,15 +368,28 @@ class Group
     @dof += dof
   end
 
+  MotorVars = [:in, :d, :v]
+  SpringVars = [:k, :c]
+  
   def variable dir, type, comment = '', value = 0
 #    p @dof.to_a unless @dof.to_a.member? dir
     raise Errno::EINVAL, "Invalid direction #{dir}" unless @dof.to_a.member? dir
-    raise Errno::EINVAL unless [:k, :c].member? type
-    @variables[[dir,type]] ||= Variable.new(dir, type, @name)
+    if SpringVars.member? type
+      @variables[[dir,type]] ||= Variable.new(dir, type, @name)
+    elsif MotorVars.member? type
+      @variables[[dir, type]] ||= StateVar.new(dir, type, @name, @markers)
+    else
+      raise Errno::EINVAL, "Invalid variable type #{type}"
+    end
   end
-
+  
   def variables
-    @dof.to_a.map {|dir| [self.variable(dir, :c), self.variable(dir, :k, '', 1e4)]}.flatten
+    if @motor
+      types = MotorVars
+    else
+      types = SpringVars
+    end
+    @dof.to_a.map { |dir| types.map{|type| self.variable(dir, type)}}.flatten
   end
 
   def to_cmd
@@ -344,7 +408,7 @@ end
 
 class JointType
   include UniqueName
-  attr_reader :name, :identifier, :dof, :prime, :none
+  attr_reader :name, :identifier, :dof, :prime, :none, :motor
 
   def self.initialize
     @@jointTypeDict = {}
@@ -360,6 +424,8 @@ class JointType
 
     JointType.new 'none', /^none$/i, DOF.new([:x, :y, :z, :a, :b, :c]), :none
     JointType.new 'none_translational', /^none_t/i, DOF.new([:x]), :none
+
+    JointType.new 'motor_linear', /^motor_[lt]/i, DOF.new([:x]), :motor
   end
 
   def self.to_s
@@ -385,6 +451,10 @@ EOF
     @name, @identifier, @dof = name, identifier, dof
     @prime = options.member? :prime
     @none = options.member? :none
+    if options.member? :motor
+      @motor = true
+      @none = true
+    end
     
     @@jointTypeDict[name] = self
     @@identifiers[identifier] = name
@@ -419,6 +489,7 @@ EOF
 
   def to_cmd_torque torqueName, group, markers, comment = ''
     torqueName = JointType.newName torqueName
+
     <<EOF
 force create direct general_force &
   general_force_name = #{torqueName} &
@@ -431,6 +502,7 @@ entity attributes entity_name = #{torqueName} &
   name_visibility = off &
   size_of_icons = #{IconSize}
 EOF
+
   end
 
   self.initialize
@@ -447,9 +519,9 @@ class Entry
     @type = JointType.typeFromString type
 
     @group =  if group == nil || group.empty?
-                Group.newGroup "#{parts[0]}_#{parts[1]}"
+                Group.newGroup "#{parts[0]}_#{parts[1]}", {:motor => @type.motor, :markers => self.torqueMarkers}
               else
-                Group.groupFromString group
+                Group.groupFromString group, {:motor => @type.motor, :markers => self.torqueMarkers}
               end
     @group.add_dof @type.dof
 
@@ -545,7 +617,7 @@ end
 header = lambda do |tokens, out|
   ModelName = tokens[1]
   IconSize = if tokens[2] && !tokens[2].strip.empty?
-               tokens[2]
+               tokens[2].to_i
              else
                IconSizeDefault
              end
