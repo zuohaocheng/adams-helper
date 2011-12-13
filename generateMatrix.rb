@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-require 'adams'
+require "#{File.dirname(__FILE__)}/adams"
 
 Version = 'generateMatrix, 2011-11-11, ZUO Haocheng'
 

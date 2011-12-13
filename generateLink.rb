@@ -3,12 +3,13 @@
 Version = 'generateLink, 2011-10-20, ZUO Haocheng'
 
 SampleFile =<<EOF
-#!ADAMSJOINTS, ModelName, IconSize=1
+#!ADAMSJOINTS, ModelName, iconSize=1
 #THIS IS A SAMPLE
 #Part1, Part2, Type, x, y, z, a, b, c, group
 AXIS, BEARING, Revolute, 0.0, -1e-2, 1, 90, 0, 90, ab
 AXIS, GEAR, Fixed, 0, 0, 0, 0, 0, 0
 AXIS, Motor, motor_linear, 0, 0, 0, 0, 0, 0
+AXIS, Motor, sensor, 0, 0, 0, 0, 0, 0
 EOF
 
 IconSizeDefault = 1 #5e-3
@@ -233,7 +234,7 @@ class DOF
     if group.dof.to_a.member? dir_sym
       if group.motor
         return <<EOF
-#{lval} = "VARVAL(#{group.variable(dir_sym, :in).name})"
+#{lval} = "VARVAL(#{group.variable(dir_sym, :in).name})" &
 EOF
       else
         d_var = group.variable(dir_sym, :k).name
@@ -361,7 +362,7 @@ class Group
   end
 
   def self.to_cmd
-    @@groups.map {|k, v| v.to_cmd}.join "\n"
+    @@groups.map {|k, v| v.to_cmd unless v.motor}.join "\n"
   end
 
   def add_dof dof
@@ -426,6 +427,7 @@ class JointType
     JointType.new 'none_translational', /^none_t/i, DOF.new([:x]), :none
 
     JointType.new 'motor_linear', /^motor_[lt]/i, DOF.new([:x]), :motor
+    JointType.new 'sensor', /^sensor/i, DOF.new([:x, :y, :z, :a, :b, :c]), :sensor
   end
 
   def self.to_s
@@ -452,6 +454,10 @@ EOF
     @prime = options.member? :prime
     @none = options.member? :none
     if options.member? :motor
+      @motor = true
+      @none = true
+    elsif options.member? :sensor
+      @sensor = true
       @motor = true
       @none = true
     end
@@ -488,9 +494,11 @@ EOF
   end
 
   def to_cmd_torque torqueName, group, markers, comment = ''
+    return group.to_cmd if @sensor && group.motor
     torqueName = JointType.newName torqueName
 
     <<EOF
+#{group.to_cmd if group.motor}
 force create direct general_force &
   general_force_name = #{torqueName} &
   i_marker_name = #{markers[0].name} &
@@ -600,7 +608,7 @@ end
 
 ########
 
-require 'adams'
+require "#{File.dirname(__FILE__)}/adams"
 
 usage = 'Usage: generateLink.rb [inputfile] [options]'
 adams = ZHAdams.new :sample => SampleFile, :version => Version, :usage => usage do |opts|
@@ -617,7 +625,7 @@ end
 header = lambda do |tokens, out|
   ModelName = tokens[1]
   IconSize = if tokens[2] && !tokens[2].strip.empty?
-               tokens[2].to_i
+               tokens[2].to_f
              else
                IconSizeDefault
              end

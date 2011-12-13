@@ -43,8 +43,8 @@ class ZHAdams
         puts <<EOF
 Euler angles, 313
 X\t0,0,0
-Y\t0,90,0
-Z\t90,90,0
+Y\t90,180,0
+Z\t90,90,90
 EOF
         exit
       end
