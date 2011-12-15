@@ -9,7 +9,8 @@ SampleFile =<<EOF
 AXIS, BEARING, Revolute, 0.0, -1e-2, 1, 90, 0, 90, ab
 AXIS, GEAR, Fixed, 0, 0, 0, 0, 0, 0
 AXIS, Motor, motor_linear, 0, 0, 0, 0, 0, 0
-AXIS, Motor, sensor, 0, 0, 0, 0, 0, 0
+AXIS, ground, sensor, 0, 0, 0, 0, 0, 0
+AXIS, GEAR, Fixed, 0, 0, 0, 0, 0, 0, cd, flex
 EOF
 
 IconSizeDefault = 1 #5e-3
@@ -115,10 +116,8 @@ class Marker
   
   attr_accessor :point, :vec, :name, :comments
 
-  def initialize point = nil, vec = nil, name = nil, comments = nil
-    @point = point
-    @vec = vec
-    @comments = comments
+  def initialize point = nil, vec = nil, name = nil, comments = nil, flex = nil
+    @point, @vec, @comments, @flex = point, vec, comments, flex
 
     @name = Marker.newName name
   end
@@ -135,13 +134,12 @@ class Marker
 
   def to_cmd # *option
     raise Errno::EINVAL, "Marker.name not specified for #{self}." unless @name
-    # if option.member? :noDir
-    #   orientation = ''
-    # else
-    #   orientation = "\n  orientation = #{@vec.to_s} &"
-    # end
-    
-    <<EOF
+    if @flex
+      Entry.new()
+      <<EOF
+part create rigid_body name_and_position &
+  part_name = #{} &
+  location = #{@point.to_s}
 marker create marker_name = #{@name} &
   comments = "#{@comments}" &
   orientation = #{@vec.to_s} &
@@ -150,6 +148,17 @@ entity attributes entity_name = #{@name} &
   name_visibility = off &
   size_of_icons = #{IconSize}
 EOF
+    else
+      <<EOF
+marker create marker_name = #{@name} &
+  comments = "#{@comments}" &
+  orientation = #{@vec.to_s} &
+  location = #{@point.to_s} 
+entity attributes entity_name = #{@name} &
+  name_visibility = off &
+  size_of_icons = #{IconSize}
+EOF
+    end
   end
 end
 
@@ -314,7 +323,10 @@ class StateVar
       @func = '0.0'
     elsif [:d, :v].member? type
       @name = ".#{ModelName}.#{type.to_s.upcase}#{dir.to_s}_#{surfix}"
-      @func = (DOF.dir_func_cmd :force, dir, markers)[type]
+      type_d = DOF.type_from_dir dir
+      dtype = type_d[:type]
+      ddir = type_d[:dir]
+      @func = (DOF.dir_func_cmd dtype, ddir, markers)[type]
     else
       raise Err::EINVAL, "Invalid type #{type} of State Variable"
     end
@@ -332,7 +344,7 @@ end
 
 class Group
   include UniqueName
-  attr_accessor :name, :dof, :motor
+  attr_accessor :name, :dof, :motor, :sensor
 
   @@groups = {}
 
@@ -354,22 +366,24 @@ class Group
     @@groups[name] = self
     @dof = DOF.new [] #[:x, :y, :z, :a, :b, :c]
     @variables = {}
-    if options[:motor]
-      @motor = true
+    @motor, @sensor = options[:motor], options[:sensor]
+
+    if @motor || @sensor
       @markers = options[:markers]
       raise Errno::EINVAL, "Group-motor must have markers." unless @markers
     end
   end
 
   def self.to_cmd
-    @@groups.map {|k, v| v.to_cmd unless v.motor}.join "\n"
+    @@groups.map {|k, v| v.to_cmd unless (v.motor || v.sensor)}.join "\n"
   end
 
   def add_dof dof
     @dof += dof
   end
 
-  MotorVars = [:in, :d, :v]
+  SensorVars = [:d, :v]
+  MotorVars = [:in]
   SpringVars = [:k, :c]
   
   def variable dir, type, comment = '', value = 0
@@ -377,7 +391,7 @@ class Group
     raise Errno::EINVAL, "Invalid direction #{dir}" unless @dof.to_a.member? dir
     if SpringVars.member? type
       @variables[[dir,type]] ||= Variable.new(dir, type, @name)
-    elsif MotorVars.member? type
+    elsif (MotorVars + SensorVars).member? type
       @variables[[dir, type]] ||= StateVar.new(dir, type, @name, @markers)
     else
       raise Errno::EINVAL, "Invalid variable type #{type}"
@@ -386,7 +400,9 @@ class Group
   
   def variables
     if @motor
-      types = MotorVars
+      types = MotorVars + SensorVars
+    elsif @sensor
+      types = SensorVars
     else
       types = SpringVars
     end
@@ -409,7 +425,7 @@ end
 
 class JointType
   include UniqueName
-  attr_reader :name, :identifier, :dof, :prime, :none, :motor
+  attr_reader :name, :identifier, :dof, :prime, :none, :motor, :sensor
 
   def self.initialize
     @@jointTypeDict = {}
@@ -427,6 +443,8 @@ class JointType
     JointType.new 'none_translational', /^none_t/i, DOF.new([:x]), :none
 
     JointType.new 'motor_linear', /^motor_[lt]/i, DOF.new([:x]), :motor
+    JointType.new 'motor_planar', /^motor_p/i, DOF.new([:x, :y]), :motor
+    
     JointType.new 'sensor', /^sensor/i, DOF.new([:x, :y, :z, :a, :b, :c]), :sensor
   end
 
@@ -458,7 +476,6 @@ EOF
       @none = true
     elsif options.member? :sensor
       @sensor = true
-      @motor = true
       @none = true
     end
     
@@ -494,7 +511,7 @@ EOF
   end
 
   def to_cmd_torque torqueName, group, markers, comment = ''
-    return group.to_cmd if @sensor && group.motor
+    return group.to_cmd if @sensor
     torqueName = JointType.newName torqueName
 
     <<EOF
@@ -521,18 +538,18 @@ end
 class Entry
   attr_accessor :parts, :type, :marker, :group, :line
 
-  def initialize parts, type, marker, line, group = nil
+  def initialize parts, type, marker, line, group, *options
     @parts, @marker, @line = parts, marker, line
 
     @type = JointType.typeFromString type
 
     @group =  if group == nil || group.empty?
-                Group.newGroup "#{parts[0]}_#{parts[1]}", {:motor => @type.motor, :markers => self.torqueMarkers}
+                Group.newGroup "#{parts[0]}_#{parts[1]}", {:motor => @type.motor, :sensor => @type.sensor, :markers => self.torqueMarkers}
               else
-                Group.groupFromString group, {:motor => @type.motor, :markers => self.torqueMarkers}
+                Group.groupFromString group, {:motor => @type.motor, :sensor => @type.sensor, :markers => self.torqueMarkers}
               end
     @group.add_dof @type.dof
-
+    @flex = options.member? :flex
   end
   
   def inspect
@@ -547,10 +564,26 @@ class Entry
     [@parts, @type.name, @marker.to_s, @group.name].flatten.join ', '
   end
 
+  def to_ps plane
+    if plane == 'X'
+      a = @marker.point.y
+      b = @marker.point.z
+    elsif plane == 'Y'
+      a = @marker.point.x
+      b = @marker.point.z
+    else
+      a = @marker.point.z
+      b = @marker.point.x
+    end
+    a *= 100
+    b *= 100
+    "#{a} mm #{b} mm 0.1 mm 0 360 arc fill"
+  end
+
   def to_cmd
     raise Errno::ENOSYS, "Invalid parts.length for #{@self}." unless @parts.length == 2
 
-    self.joint #+ self.torque
+    self.joint
   end
 
   def joint
@@ -575,7 +608,15 @@ EOF
                       raise Errno::EINVAL, "Invalid type #{type} for marker"
                     end
     comment = "#{markerComment} to #{parts[1]} on #{parts[0]}"
-    marker = Marker.new @marker.point, @marker.vec, name, comment
+
+    if @flex && parts == @parts
+      flex = {:part => parts[0], :name => ".#{ModelName}.pf_#{parts[0]}"}
+      name 
+    else
+      flex = nil
+    end
+    
+    marker = Marker.new @marker.point, @marker.vec, name, comment, flex
   end
 
   def jointMarkers
@@ -620,6 +661,11 @@ adams = ZHAdams.new :sample => SampleFile, :version => Version, :usage => usage 
   opts.on("-k", "--check", "Check and output evaluated file") do
     options[:check] = true
   end
+
+  opts.on("-p", "--postscript PLANE", "Project points to plane") do |plane|
+    options[:postscript] = true
+    options[:postscriptplane] = plane
+  end
 end
 
 header = lambda do |tokens, out|
@@ -638,7 +684,10 @@ content = lambda do |tokens, ln, b|
     parts = [tokens[0]]
     parts.push tokens[1] unless tokens[1].empty?
 
-    entries.push Entry.new parts, tokens[2], marker, ln, tokens[9]  
+  flag = tokens[10]
+  flag.lowercase! if flag
+  
+    entries.push Entry.new(parts, tokens[2], marker, ln, tokens[9], flag)
 end
 
 adams.parse('#!ADAMSJOINTS', content, header)
@@ -648,6 +697,15 @@ outFd = adams.out
 if options[:check]
   outFd.puts "#!ADAMSJOINTS, #{ModelName}, #{IconSize}"
   outFd.puts entries.map {|entry| entry.to_csv}.join "\n"
+elsif options[:postscript]
+  plane = (%w{X Y Z} - options[:postscriptplane].upcase.unpack('aa').sort)
+  outFd.puts <<EOF
+%!PS
+/mm { 360 mul 127 div } def
+105 mm 150 mm translate
+EOF
+  plane=''
+  outFd.puts entries.map {|entry| entry.to_ps plane}.join "\n"
 else
   outFd.puts "!Generated by generateLink, 2011 ZUO Haocheng"
   outFd.puts "undo begin"
