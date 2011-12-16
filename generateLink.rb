@@ -10,7 +10,14 @@ AXIS, BEARING, Revolute, 0.0, -1e-2, 1, 90, 0, 90, ab
 AXIS, GEAR, Fixed, 0, 0, 0, 0, 0, 0
 AXIS, Motor, motor_linear, 0, 0, 0, 0, 0, 0
 AXIS, ground, sensor, 0, 0, 0, 0, 0, 0
-AXIS, GEAR, Fixed, 0, 0, 0, 0, 0, 0, cd, flex
+AXIS, GEAR, none_translational, 0, 0, 0, 0, 0, 0, cd, flex
+
+#Line start with ! will evaluated in ruby, and value can be used in all numeric field, e.g. x-z, a-c
+!p = [0, 1, 2]
+
+#Set value of variable
+# $VAR, type, direction, group, value
+$VAR, k, a, ab, 1000
 EOF
 
 IconSizeDefault = 1 #5e-3
@@ -114,7 +121,7 @@ end
 class Marker
   include UniqueName
   
-  attr_accessor :point, :vec, :name, :comments
+  attr_accessor :point, :vec, :name, :comments, :flex
 
   def initialize point = nil, vec = nil, name = nil, comments = nil, flex = nil
     @point, @vec, @comments, @flex = point, vec, comments, flex
@@ -134,11 +141,12 @@ class Marker
 
   def to_cmd # *option
     raise Errno::EINVAL, "Marker.name not specified for #{self}." unless @name
+    #$stderr.puts @flex.inspect
     if @flex
-      Entry.new()
+      Entry.new([flex[:flexpart], flex[:rigidpart]], 'Fixed', self, 0, nil)
       <<EOF
 part create rigid_body name_and_position &
-  part_name = #{} &
+  part_name = #{@flex[:rigidpart]} &
   location = #{@point.to_s}
 marker create marker_name = #{@name} &
   comments = "#{@comments}" &
@@ -275,7 +283,7 @@ end
 class Variable
   attr_accessor :name, :dir, :type, :surfix, :unit, :comment, :value
 
-  def initialize dir, type, surfix, comment = '', value = nil
+  def initialize dir, type, surfix, value = nil, comment = ''
     @dir, @type, @surfix, @comment, @value = dir, type, surfix, comment, value
 
     type_t = true if [:a, :b, :c].member? dir
@@ -299,7 +307,7 @@ class Variable
       raise Errno::EINVAL, "Invalid type #{type} of Variable"
     end
 
-    @name += 'T' if type_t
+#    @name += 'T' if type_t
     @name += "#{dir.to_s}_#{surfix}"
   end
 
@@ -344,7 +352,7 @@ end
 
 class Group
   include UniqueName
-  attr_accessor :name, :dof, :motor, :sensor
+  attr_accessor :name, :dof, :motor, :sensor, :variables, :vals
 
   @@groups = {}
 
@@ -390,7 +398,9 @@ class Group
 #    p @dof.to_a unless @dof.to_a.member? dir
     raise Errno::EINVAL, "Invalid direction #{dir}" unless @dof.to_a.member? dir
     if SpringVars.member? type
-      @variables[[dir,type]] ||= Variable.new(dir, type, @name)
+      val = vals[type]
+      val = val[dir] if val
+      @variables[[dir,type]] ||= Variable.new(dir, type, @name, val)
     elsif (MotorVars + SensorVars).member? type
       @variables[[dir, type]] ||= StateVar.new(dir, type, @name, @markers)
     else
@@ -407,6 +417,16 @@ class Group
       types = SpringVars
     end
     @dof.to_a.map { |dir| types.map{|type| self.variable(dir, type)}}.flatten
+  end
+
+  def set_val dir, type, val
+    if SpringVars.member? type
+      @vals ||= {}
+      @vals[type] ||= {}
+      @vals[type][dir] = val
+    else
+      raise Errno::EINVAL, "Can't set value of variable type #{type}"
+    end
   end
 
   def to_cmd
@@ -538,8 +558,19 @@ end
 class Entry
   attr_accessor :parts, :type, :marker, :group, :line
 
+  def self.initialize
+    @@entries = []
+  end
+
+  def self.entries
+    @@entries
+  end
+
+  self.initialize
+
   def initialize parts, type, marker, line, group, *options
     @parts, @marker, @line = parts, marker, line
+    @flex = options.member? :flex
 
     @type = JointType.typeFromString type
 
@@ -549,7 +580,8 @@ class Entry
                 Group.groupFromString group, {:motor => @type.motor, :sensor => @type.sensor, :markers => self.torqueMarkers}
               end
     @group.add_dof @type.dof
-    @flex = options.member? :flex
+
+    @@entries.push self
   end
   
   def inspect
@@ -599,7 +631,6 @@ EOF
   end
 
   def marker parts, type
-    name = ".#{ModelName}.#{parts[0]}.m#{type}_#{parts[1]}"
     markerComment = if type == 'j'
                       'Marker for constraint'
                     elsif type == 't'
@@ -610,13 +641,15 @@ EOF
     comment = "#{markerComment} to #{parts[1]} on #{parts[0]}"
 
     if @flex && parts == @parts
-      flex = {:part => parts[0], :name => ".#{ModelName}.pf_#{parts[0]}"}
-      name 
+      flex = {:flexpart => parts[0], :rigidpart => "pf_#{parts[0]}"}
+      name = ".#{ModelName}.#{flex[:rigidpart]}.m#{type}_#{parts[1]}"
     else
+      name = ".#{ModelName}.#{parts[0]}.m#{type}_#{parts[1]}"
       flex = nil
     end
-    
     marker = Marker.new @marker.point, @marker.vec, name, comment, flex
+#    $stderr.puts [type, marker.flex, (@flex)].inspect
+    marker
   end
 
   def jointMarkers
@@ -683,20 +716,29 @@ end
 
 entries = []
 content = lambda do |tokens, ln, b|
-    marker = Marker.new(Point.fromString(tokens[3..5]), Vector.fromString(tokens[6..8]))
-    
-    parts = [tokens[0]]
-    parts.push tokens[1] unless tokens[1].empty?
+  if tokens[0][0] == '$'[0]
+    group = Group.groupFromString tokens[3]
+    dir = tokens[2]
+    type = tokens[1]
+    val = tokens[4].to_f
+    group.set_val dir.downcase.to_sym, type.downcase.to_sym, val
+    return
+  end
+  
+  marker = Marker.new(Point.fromString(tokens[3..5]), Vector.fromString(tokens[6..8]))
+  
+  parts = [tokens[0]]
+  parts.push tokens[1] unless tokens[1].empty?
 
   flag = tokens[10]
-  flag.lowercase! if flag
-  
-    entries.push Entry.new(parts, tokens[2], marker, ln, tokens[9], flag)
+  flag.downcase! if flag
+  Entry.new(parts, tokens[2], marker, ln, tokens[9], flag.to_sym)
 end
 
 adams.parse('#!ADAMSJOINTS', content, header)
 
 outFd = adams.out
+entries = Entry.entries
 
 if options[:check]
   outFd.puts "#!ADAMSJOINTS, #{ModelName}, #{IconSize}"
