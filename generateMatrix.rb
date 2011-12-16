@@ -13,6 +13,9 @@ AXIS, GEAR, none, xy, 5, 3, 0, 0, 0, 1, 2, 0, 0, 0, 0
 #Line start with @ will be output as is, without @
 @AXIS, BEARING, Revolute, 0.0, -1e-2, 1, 90, 0, 90, ab
 @AXIS, GEAR, Fixed, 0, 0, 0, 0, 0, 0
+
+#Line start with ! will evaluated in ruby, and value can be used in all numeric field, e.g. densities, x-z, a-c
+!p = [0, 1, 2]
 EOF
 
 class FloatRange

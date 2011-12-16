@@ -129,30 +129,34 @@ EOF
   end
 
   def parseContentLine line, block
-    tokens = gen_tokens line
-    return if !tokens || tokens.empty?
-
-    case tokens[0][0..0]
+    line.strip!
+    case line[0..0]
     when '!'
       eval(line[1..-1], Eb)
-    when '%'
-      self.ln = tokens[0][1..-1].to_i
-      @file = tokens[1]
-      @line_inc = false
     when '#'
     else
-      begin
-        block.call tokens, @ln, @out
-      rescue
-        addr = "#{@file}:#{@ln}"
-        # @errors[addr] ||= 0
-        # @errors[addr] += 1
+      tokens = gen_tokens line
+      return if !tokens || tokens.empty?
 
-        # if @errors[addr] == 1
+      case tokens[0][0..0]
+      when '%'
+        self.ln = tokens[0][1..-1].to_i
+        @file = tokens[1]
+        @line_inc = false
+      else
+        begin
+          block.call tokens, @ln, @out
+        rescue
+          addr = "#{@file}:#{@ln}"
+          # @errors[addr] ||= 0
+          # @errors[addr] += 1
+
+          # if @errors[addr] == 1
           $stderr.print addr.emphasize + ': '
           $stderr.puts $!
           $stderr.print line
-        # end
+          # end
+        end
       end
     end
   end
