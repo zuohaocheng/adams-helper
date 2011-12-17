@@ -1,4 +1,4 @@
-#!/usr/bin/env ruby
+#!/usr/bin/env ruby -d
 # ModelName = 't'
 Version = 'generateLink, 2011-10-20, ZUO Haocheng'
 
@@ -94,37 +94,162 @@ class Vector
   end
 end
 
-module UniqueName
-  module UniqueNameClass
-    def newName str
-      return nil unless str
-      @base_names ||={}
+module UniqueNameClass
+  def newName str
+    return nil unless str
+    @base_names ||={}
 
-      count = @base_names[str]
-      if count
-        str_t = "#{str}_#{count}"
-        count += 1
-        @base_names[str] = count
-      else
-        str_t = str
-        @base_names[str] = 2
-      end
-      str_t
+    count = @base_names[str]
+    if count
+      str_t = "#{str}_#{count}"
+      count += 1
+      @base_names[str] = count
+    else
+      str_t = str
+      @base_names[str] = 2
     end
+    str_t
   end
-    
+end
+
+module UniqueName
   def self.included base
     base.extend UniqueNameClass
+  end
+end
+
+class PartsPair
+  include UniqueName
+  attr_accessor :name, :parts
+
+  def self.newPair parts
+    raise Errno::EINVAL, "Invalid pair #{parts}" unless parts.length == 2
+    PartsPair.new self.newName("#{parts[0].name}_#{parts[1].name}"), parts
+  end
+
+  def initialize name, parts
+    @name, @parts = name, parts
+    @flex_body_built = false
+  end
+
+  def inspect
+    @parts.inspect
+  end
+
+  def cmd_name type
+    if type == :torque
+      modifier = 'T'
+    elsif type == :joint
+      modifier = 'J'
+    else
+      raise Errno::EINVAL, "Invalid type #{type} for partspair"
+    end
+    ".#{ModelName}.#{modifier}_#{self.act.name}_#{self.react.name}"
+  end
+
+  def names
+    @parts.map {|part| part.name}
+  end
+
+  def act
+    return @parts[0]
+  end
+
+  def react
+    return @parts[1]
+  end
+
+  def new_markers type, marker
+    ret = [self.act.new_marker(type, self.react, marker, !@flex_body_built),
+     self.react.new_marker(type, self.act, marker, false)]
+    @flex_body_built = true
+    ret
+  end
+end
+
+class Part
+  include UniqueName
+  include UniqueNameClass
+  attr_accessor :name, :new, :cm, :flex
+  attr_accessor :markers
+
+  @@parts = {}
+  
+  def self.newPart str, options={}
+    Part.new self.newName(str), options
+  end
+
+  def self.partFromString str, options={}
+    @@parts[str] || self.newPart(str, options)
+  end
+  
+  def initialize name, options
+    @@parts[name] = self
+    @name = name
+    
+    @new = options[:new]
+    @cm = options[:cm]
+    @flex = options[:flex]
+    @markers = []
+  end
+
+  def inspect
+    "Part #{@name}"
+  end
+
+  def to_s
+    @name
+  end
+
+  def new_marker type, react, marker, build_flex
+    markerComment = if type == :joint
+                      stype = 'j'
+                      'Marker for constraint'
+                    elsif type == :torque
+                      stype = 't'
+                      'Marker for torque'
+                    elsif
+                      raise Errno::EINVAL, "Invalid type #{type} for marker"
+                    end
+    comment = "#{markerComment} to #{react.name} on #{self}"
+    
+    name = "m#{stype}_#{react.name}"
+
+    if build_flex && @flex && react.flex
+      rigidpart = Part.newPart "pf_#{@name}", :new => true, :cm => marker
+      jointtype = JointType.typeFromString 'Fixed'
+      Entry.new(PartsPair.newPair([self, rigidpart]), jointtype, marker, 0, nil)
+      
+      marker = rigidpart.new_marker type, react, marker, false
+    else
+      new_name = ".#{ModelName}.#{@name}.#{self.newName(name)}"
+      marker = Marker.new marker.point, marker.vec, new_name, comment
+      @markers.push marker
+    end
+    marker
+  end
+
+  def to_cmd
+    return '' unless @new
+    <<EOF
+part create rigid_body name_and_position &
+  part_name = #{@name} &
+  location = #{@cm.point.to_s}
+EOF
+  end
+
+  def self.to_cmd
+    @@parts.map {|k, v| v.to_cmd}.join "\n"
   end
 end
 
 class Marker
   include UniqueName
   
-  attr_accessor :point, :vec, :name, :comments, :flex
+  attr_accessor :point, :vec, :name, :comments
 
-  def initialize point = nil, vec = nil, name = nil, comments = nil, flex = nil
-    @point, @vec, @comments, @flex = point, vec, comments, flex
+  def initialize point = nil, vec = nil, name = nil, comments = nil
+    @point, @vec, @comments = point, vec, comments
 
     @name = Marker.newName name
   end
@@ -141,13 +266,8 @@ class Marker
 
   def to_cmd # *option
     raise Errno::EINVAL, "Marker.name not specified for #{self}." unless @name
-    #$stderr.puts @flex.inspect
-    if @flex
-      Entry.new([flex[:flexpart], flex[:rigidpart]], 'Fixed', self, 0, nil)
-      <<EOF
-part create rigid_body name_and_position &
-  part_name = #{@flex[:rigidpart]} &
-  location = #{@point.to_s}
+
+    <<EOF
 marker create marker_name = #{@name} &
   comments = "#{@comments}" &
   orientation = #{@vec.to_s} &
@@ -156,17 +276,6 @@ entity attributes entity_name = #{@name} &
   name_visibility = off &
   size_of_icons = #{IconSize}
 EOF
-    else
-      <<EOF
-marker create marker_name = #{@name} &
-  comments = "#{@comments}" &
-  orientation = #{@vec.to_s} &
-  location = #{@point.to_s} 
-entity attributes entity_name = #{@name} &
-  name_visibility = off &
-  size_of_icons = #{IconSize}
-EOF
-    end
   end
 end
 
@@ -361,11 +470,7 @@ class Group
   end
 
   def self.groupFromString str, options={}
-    # if options[:motor]
-    #   self.newGroup(str, options)
-    # else
-      @@groups[str] || self.newGroup(str, options)
-    # end
+    @@groups[str] || self.newGroup(str, options)
   end
 
   def initialize name, options
@@ -375,6 +480,7 @@ class Group
     @dof = DOF.new [] #[:x, :y, :z, :a, :b, :c]
     @variables = {}
     @motor, @sensor = options[:motor], options[:sensor]
+    @vals = {}
 
     if @motor || @sensor
       @markers = options[:markers]
@@ -398,7 +504,7 @@ class Group
 #    p @dof.to_a unless @dof.to_a.member? dir
     raise Errno::EINVAL, "Invalid direction #{dir}" unless @dof.to_a.member? dir
     if SpringVars.member? type
-      val = vals[type]
+      val = @vals[type]
       val = val[dir] if val
       @variables[[dir,type]] ||= Variable.new(dir, type, @name, val)
     elsif (MotorVars + SensorVars).member? type
@@ -421,7 +527,6 @@ class Group
 
   def set_val dir, type, val
     if SpringVars.member? type
-      @vals ||= {}
       @vals[type] ||= {}
       @vals[type][dir] = val
     else
@@ -431,9 +536,8 @@ class Group
 
   def to_cmd
     <<EOF
-!---Build variables---
+!---Build variables for Group #{@name}---
 #{self.variables.map{|var| var.to_cmd}.join "\n"}
-
 EOF
   end
 end
@@ -474,7 +578,7 @@ class JointType
 
   def to_s
     <<EOF
-#{@name}\t#{@identifier.inspect}\t#{@dof}\t#{@none}
+#{@name}\t#{@identifier.inspect}\t#{@dof}\t#{!@none}
 EOF
   end
 
@@ -490,13 +594,16 @@ EOF
   def initialize name, identifier, dof, *options
     @name, @identifier, @dof = name, identifier, dof
     @prime = options.member? :prime
-    @none = options.member? :none
+    @sensor = false
+    @motor = false
     if options.member? :motor
       @motor = true
       @none = true
     elsif options.member? :sensor
       @sensor = true
       @none = true
+    else
+      @none = options.member? :none
     end
     
     @@jointTypeDict[name] = self
@@ -556,7 +663,7 @@ end
 ######
   
 class Entry
-  attr_accessor :parts, :type, :marker, :group, :line
+  attr_accessor :parts, :marker, :group, :line
 
   def self.initialize
     @@entries = []
@@ -569,13 +676,10 @@ class Entry
   self.initialize
 
   def initialize parts, type, marker, line, group, *options
-    @parts, @marker, @line = parts, marker, line
-    @flex = options.member? :flex
-
-    @type = JointType.typeFromString type
-
+    @parts, @marker, @line, @type = parts, marker, line, type
+    
     @group =  if group == nil || group.empty?
-                Group.newGroup "#{parts[0]}_#{parts[1]}", {:motor => @type.motor, :sensor => @type.sensor, :markers => self.torqueMarkers}
+                Group.newGroup "#{parts.names.join '_'}", {:motor => @type.motor, :sensor => @type.sensor, :markers => self.torqueMarkers}
               else
                 Group.groupFromString group, {:motor => @type.motor, :sensor => @type.sensor, :markers => self.torqueMarkers}
               end
@@ -588,12 +692,8 @@ class Entry
     "{#{@parts}, #{@type}, #{@marker}, #{group}}"
   end
   
-  def valid?
-    true
-  end
-
   def to_csv
-    [@parts, @type.name, @marker.to_s, @group.name].flatten.join ', '
+    [@parts.names, @type.name, @marker.to_s, @group.name].flatten.join ', '
   end
 
   def to_ps plane
@@ -613,48 +713,23 @@ class Entry
   end
 
   def to_cmd
-    raise Errno::ENOSYS, "Invalid parts.length for #{@self}." unless @parts.length == 2
-
     self.joint
   end
 
   def joint
     <<EOF
-!---Build joint between #{@parts[0]} and #{@parts[1]}, line #{@line} ---
+!---Build joint between #{@parts.names.join ' and '}, line #{@line} ---
 #{self.jointMarkersCmd}
 #{self.jointConstraint}
 
-!---Build torque between #{@parts[0]} and #{@parts[1]}, line #{@line}---
+!---Build torque between #{@parts.names.join ' and '}, line #{@line}---
 #{self.torqueMarkersCmd}
 #{self.torque}
 EOF
   end
 
-  def marker parts, type
-    markerComment = if type == 'j'
-                      'Marker for constraint'
-                    elsif type == 't'
-                      'Marker for torque'
-                    elsif
-                      raise Errno::EINVAL, "Invalid type #{type} for marker"
-                    end
-    comment = "#{markerComment} to #{parts[1]} on #{parts[0]}"
-
-    if @flex && parts == @parts
-      flex = {:flexpart => parts[0], :rigidpart => "pf_#{parts[0]}"}
-      name = ".#{ModelName}.#{flex[:rigidpart]}.m#{type}_#{parts[1]}"
-    else
-      name = ".#{ModelName}.#{parts[0]}.m#{type}_#{parts[1]}"
-      flex = nil
-    end
-    marker = Marker.new @marker.point, @marker.vec, name, comment, flex
-#    $stderr.puts [type, marker.flex, (@flex)].inspect
-    marker
-  end
-
   def jointMarkers
-    @jointMarkers = [self.marker(@parts, 'j'), self.marker(@parts.reverse, 'j')] unless @jointMarkers 
-    @jointMarkers
+    @jointMarkers ||= @parts.new_markers :joint, @marker
   end
 
   def jointMarkersCmd
@@ -662,8 +737,7 @@ EOF
   end
 
   def torqueMarkers
-    @torqueMarkers = [self.marker(@parts, 't'), self.marker(@parts.reverse, 't')] unless @torqueMarkers
-    @torqueMarkers
+    @torqueMarkers ||= @parts.new_markers :torque, @marker
   end
   
   def torqueMarkersCmd
@@ -671,12 +745,13 @@ EOF
   end
 
   def jointConstraint
-    jointName = ".#{ModelName}.#{@parts[0]}_#{@parts[1]}"
-    @type.to_cmd jointName, self.jointMarkers
+    name = @parts.cmd_name :joint
+    @type.to_cmd name, self.jointMarkers
   end
   
   def torque
-    @type.to_cmd_torque ".#{ModelName}.F_#{@parts[0]}_#{@parts[1]}" , @group, @torqueMarkers, "Torque between #{@parts[0]} and #{@parts[1]}" unless @type.dof.to_a.empty?
+    name = @parts.cmd_name :torque
+    @type.to_cmd_torque name , @group, @torqueMarkers, "Torque between #{@parts.names.join ' and '}" unless @type.dof.to_a.empty?
   end
 end
 
@@ -726,13 +801,17 @@ content = lambda do |tokens, ln, b|
   end
   
   marker = Marker.new(Point.fromString(tokens[3..5]), Vector.fromString(tokens[6..8]))
-  
-  parts = [tokens[0]]
-  parts.push tokens[1] unless tokens[1].empty?
 
-  flag = tokens[10]
-  flag.downcase! if flag
-  Entry.new(parts, tokens[2], marker, ln, tokens[9], flag.to_sym)
+  rawflags = tokens[10..-1]
+  if rawflags
+    flags = tokens[10..-1].map {|f| f.downcase}
+    flex = flags.include? 'flex'
+  end
+
+  type = JointType.typeFromString tokens[2]
+  parts = PartsPair.newPair([Part.partFromString(tokens[0], :flex => flex), Part.partFromString(tokens[1], :flex => flex)])
+  
+  Entry.new(parts, type, marker, ln, tokens[9])
 end
 
 adams.parse('#!ADAMSJOINTS', content, header)
@@ -756,6 +835,7 @@ else
   outFd.puts "undo begin"
 
   outFd.puts Group.to_cmd
+  outFd.puts Part.to_cmd
   outFd.puts entries.map {|entry| entry.to_cmd}.join ''
 
   outFd.puts "undo end"

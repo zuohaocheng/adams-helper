@@ -144,18 +144,22 @@ EOF
         @file = tokens[1]
         @line_inc = false
       else
-        begin
-          block.call tokens, @ln, @out
-        rescue
-          addr = "#{@file}:#{@ln}"
-          # @errors[addr] ||= 0
-          # @errors[addr] += 1
+        unless $DEBUG
+          begin
+            block.call tokens, @ln, @out
+          rescue
+            addr = "#{@file}:#{@ln}"
+            # @errors[addr] ||= 0
+            # @errors[addr] += 1
 
-          # if @errors[addr] == 1
-          $stderr.print addr.emphasize + ': '
-          $stderr.puts $!
-          $stderr.print line
-          # end
+            # if @errors[addr] == 1
+            $stderr.print addr.emphasize + ': '
+            $stderr.puts $!
+            $stderr.print line
+            # end
+          end
+        else
+          block.call tokens, @ln, @out
         end
       end
     end
