@@ -1,4 +1,4 @@
-#!/usr/bin/env ruby -d
+#!/usr/bin/env ruby
 # ModelName = 't'
 Version = 'generateLink, 2011-10-20, ZUO Haocheng'
 
@@ -160,8 +160,8 @@ class PartsPair
   end
 
   def new_markers type, marker
-    ret = [self.act.new_marker(type, self.react, marker, !@flex_body_built),
-     self.react.new_marker(type, self.act, marker, false)]
+    ret = [self.act.new_marker(type, self.react, marker, false),
+     self.react.new_marker(type, self.act, marker, !@flex_body_built)]
     @flex_body_built = true
     ret
   end
@@ -256,7 +256,7 @@ class Marker
 
   def inspect
     out = "{#{@point.inspect}, #{@vec.inspect}}"
-    out = "#{@name}:" +out if name
+    out = ("#{@name}:" + out) if name
     out
   end
 
@@ -271,7 +271,8 @@ class Marker
 marker create marker_name = #{@name} &
   comments = "#{@comments}" &
   orientation = #{@vec.to_s} &
-  location = #{@point.to_s} 
+  location = #{@point.to_s} &
+  preserve_location = true
 entity attributes entity_name = #{@name} &
   name_visibility = off &
   size_of_icons = #{IconSize}
@@ -555,7 +556,7 @@ class JointType
     @@jointTypeDict = {}
     @@identifiers = {}
 
-    JointType.new 'Spherical', /^S/i, DOF.new([:a, :b, :c])
+    JointType.new 'Spherical', /^Spherical/i, DOF.new([:a, :b, :c])
     JointType.new 'Revolute', /^R/i, DOF.new([:a])
     JointType.new 'Cylindrical', /^C/i, DOF.new([:x, :a])
     JointType.new 'Translational', /^T/i, DOF.new([:x])

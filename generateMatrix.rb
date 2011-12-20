@@ -73,6 +73,7 @@ content = lambda do |tokens, ln, out|
   p2 = tokens[9..11].map {|s| s.to_f}
   orientation = tokens[12..14]
   group = tokens[15]
+  entry_options = tokens[16..-1]
 
   raise Errno::EINVAL, "Invalid plane #{tokens[3]}" if plane.length != 1 || !%w{X Y Z}.member?(plane_dir = plane[0])
   plane_dir_num = {:X => 0, :Y => 1, :Z => 2}[plane_dir.to_sym]
@@ -91,7 +92,7 @@ content = lambda do |tokens, ln, out|
     FloatRange.new(p1[vn], p2[vn], density[1]).each do |v|
       outp[un] = u
       outp[vn] = v
-      out.puts [parts, type, outp, orientation, group].flatten.join ', '
+      out.puts [parts, type, outp, orientation, group, entry_options].flatten.join ', '
     end
   end
 end
