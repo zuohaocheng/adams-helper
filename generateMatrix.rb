@@ -3,7 +3,7 @@ require "#{File.dirname(__FILE__)}/adams"
 
 Version = 'generateMatrix, 2011-11-11, ZUO Haocheng'
 
-SampleFile =<<EOF
+SampleFile =<<EOD
 #!ADAMSJMATRIX, ModelName, IconSize=1
 #THIS IS A SAMPLE
 #Part1, Part2, Type, Plane, density-u, density-v, x1, y1, z1, x2, y2, z2, a, b, c, group
@@ -14,9 +14,15 @@ AXIS, GEAR, none, xy, 5, 3, 0, 0, 0, 1, 2, 0, 0, 0, 0
 @AXIS, BEARING, Revolute, 0.0, -1e-2, 1, 90, 0, 90, ab
 @AXIS, GEAR, Fixed, 0, 0, 0, 0, 0, 0
 
+# Here document will be output as is
+<< EOF
+blablablah
+another blah
+EOF
+
 #Line start with ! will evaluated in ruby, and value can be used in all numeric field, e.g. densities, x-z, a-c
 !p = [0, 1, 2]
-EOF
+EOD
 
 class FloatRange
   attr_accessor :min, :max, :count
@@ -59,11 +65,11 @@ content = lambda do |tokens, ln, out|
   out.puts "% #{ln}, #{adams.file}" if options[:line]
   
 #  $stderr.puts tokens.inspect
-  if tokens[0][0] == '@'[0]
-    tokens[0] = tokens[0][1..-1]
-    out.puts tokens.join(', ')
-    return
-  end
+  # if tokens[0][0] == '@'[0]
+  #   tokens[0] = tokens[0][1..-1]
+  #   out.puts tokens.join(', ')
+  #   return
+  # end
   
   parts = tokens[0..1]
   type = tokens[2]

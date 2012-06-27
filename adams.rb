@@ -118,7 +118,24 @@ EOF
 
   def parse headerId, lineBlock = nil, headerBlock = nil, &lineBlockA
     header = @in.gets
-    self.parseHeader header, headerId, headerBlock
+    unless $DEBUG
+      begin
+        self.parseHeader header, headerId, headerBlock
+      rescue
+            addr = "#{@file}:#{@ln}"
+            # @errors[addr] ||= 0
+            # @errors[addr] += 1
+
+            # if @errors[addr] == 1
+            $stderr.print addr.emphasize + ': '
+            $stderr.puts $!
+            $stderr.print header
+            # end
+      end
+    else
+        self.parseHeader header, headerId, headerBlock
+    end
+
 
     @ln = 1
     while (line = @in.gets)
@@ -133,8 +150,25 @@ EOF
     case line[0..0]
     when '!'
       eval(line[1..-1], Eb)
+    when '@'
+      @out.puts line[1..-1]      
     when '#'
     else
+      if @hereDoc
+        if line == @hereDoc
+          @hereDoc = nil
+        else
+          if @escapeHere
+            @out.puts eval('"' + line + '"', Eb)
+          else
+            @out.puts line
+          end
+        end
+      elsif (line[0..1] == '<<')
+        @escapeHere = (line[2..2] == '<')
+        @hereDoc = (line.match /^<<<?[^A-Za-z_]*([A-Za-z_][A-Za-z_0-9]*)/)[1]
+      else
+
       tokens = gen_tokens line
       return if !tokens || tokens.empty?
 
@@ -162,6 +196,7 @@ EOF
           block.call tokens, @ln, @out
         end
       end
+      end
     end
   end
   
@@ -185,6 +220,7 @@ EOF
     self.stdio ARGV, options
 
     @line_inc = true
+    @hereDoc = false
     # @errors = {}
   end
 end
